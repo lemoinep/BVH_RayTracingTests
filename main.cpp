@@ -41,7 +41,6 @@
 #include <thrust/copy.h>
 #include <thrust/count.h>
 
-//#include <rocthrust/rocthrust.h>
 
 #include <gmsh.h>
 
@@ -947,44 +946,6 @@ void test002_with_box(const std::string& filename)
         }
     }
 }
-
-
-/*
-void test002_with_triangle2(const std::string& filename)
-{
-    // Load the mesh from an OBJ file
-    std::vector<F3Triangle> triangles = loadOBJVec(filename);
-
-    // Copy triangles to GPU
-    thrust::device_vector<F3Triangle> d_triangles(triangles.begin(), triangles.end());
-    thrust::device_vector<float> d_results(triangles.size());
-
-    // Building the BVH with a complex method
-    thrust::BoxVirtualHierarchy bvh;
-    bvh.build(d_triangles.data().get(), d_triangles.size());
-
-    // Define Ray
-    Vec3 rayOrigin = {0.5f, 0.5f, -1.0f};
-    Vec3 rayDir = {0.0f, 0.0f, 1.0f};
-
-    // Start the ray tracing kernel
-    int numTriangles = triangles.size();
-    int blockSize = 256;
-    int numBlocks = (numTriangles + blockSize - 1) / blockSize;
-    rayTraceKernelTriangle<<<numBlocks, blockSize>>>(d_triangles.data().get(), rayOrigin, rayDir, d_results.data().get(), numTriangles);
-
-    // Copy results from GPU to CPU
-    thrust::host_vector<float> results = d_results;
-
-    // Show results
-    for (int i = 0; i < numTriangles; ++i) {
-        if (results[i] >= 0) {
-            std::cout << "Intersection found with triangle " << i << " à t = " << results[i] << std::endl;
-        }
-    }
-}
-*/
-
 // END:: BVH and Ray Tracing part
 
 //-------------------------------------------------------------------------------------------------------------------------------------------
