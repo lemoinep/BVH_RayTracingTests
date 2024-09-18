@@ -47,7 +47,7 @@
 
 #define SWAP(T, a, b) do { T tmp = a; a = b; b = tmp; } while (0)
  
-struct AABB {
+ struct AABB {
     float3 lower, upper;
 };
 
@@ -160,6 +160,17 @@ struct Box {
     }
 };
 
+
+struct BoxCentroid {
+    float3 centroid;
+    int index;
+};
+
+struct TriangleCentroid {
+    float3 centroid;
+    int index;
+};
+
 struct Rectangle {
     Vec3 v0, v1, v2, v3;
 };
@@ -196,16 +207,17 @@ bool loadOBJTriangle(const std::string& filename, std::vector<F3Triangle>& trian
 
     std::vector<float3> vertices;
     std::string line;
+    bool isView=false;
     while (std::getline(file, line)) {
         if (line[0] == 'v') {
             float x, y, z;
             sscanf(line.c_str(), "v %f %f %f", &x, &y, &z);
             vertices.push_back(make_float3(x, y, z));
-            std::cout <<"v=<" << x <<","<<y<<","<<z<< ">\n";
+            if (isView) std::cout <<"v=<" << x <<","<<y<<","<<z<< ">\n";
         } else if (line[0] == 'f') {
             unsigned int i1, i2, i3;
             sscanf(line.c_str(), "f %u %u %u", &i1, &i2, &i3);
-            std::cout <<"f=<" << i1 <<","<<i2<<","<<i3<< ">\n";
+            if (isView) std::cout <<"f=<" << i1 <<","<<i2<<","<<i3<< ">\n";
             triangles.push_back({vertices[i1-1], vertices[i2-1], vertices[i3-1]});
         }
     }
@@ -431,6 +443,31 @@ void loadMshGmsh(const std::string& filename)
 //-------------------------------------------------------------------------------------------------------------------------------------------
 //===========================================================================================================================================
 
+
+__device__ float3 calculateCentroid(const Box& box) {
+    return make_float3(
+        (box.min.x + box.max.x) * 0.5f,
+        (box.min.y + box.max.y) * 0.5f,
+        (box.min.z + box.max.z) * 0.5f
+    );
+}
+
+
+struct CompareBoxCentroid {
+    int axis;
+    CompareBoxCentroid(int _axis) : axis(_axis) {}
+    __device__ bool operator()(const BoxCentroid& a, const BoxCentroid& b) const {
+        return (axis == 0) ? (a.centroid.x < b.centroid.x) :
+            (axis == 1) ? (a.centroid.y < b.centroid.y) :
+            (a.centroid.z < b.centroid.z);
+    }
+};
+
+
+
+
+//-------
+
 // Intersection function between a ray and a plan
 __host__ __device__ std::optional<Vec3> rayPlaneIntersect(const Ray& ray, const Vec3& planePoint, const Vec3& planeNormal) {
     constexpr float epsilon = 1e-6f;
@@ -523,8 +560,30 @@ void calculateBoundingBox(const F3Triangle& triangle, float3& min, float3& max)
                       fmaxf(fmaxf(triangle.v0.z, triangle.v1.z), triangle.v2.z));
 }
 
+
+__device__ 
+float3 calculateCentroid(const F3Triangle& triangle) {
+    return make_float3(
+        (triangle.v0.x + triangle.v1.x + triangle.v2.x) / 3.0f,
+        (triangle.v0.y + triangle.v1.y + triangle.v2.y) / 3.0f,
+        (triangle.v0.z + triangle.v1.z + triangle.v2.z) / 3.0f
+    );
+}
+
+
+struct CompareTriangleCentroid {
+    int axis;
+    CompareTriangleCentroid(int _axis) : axis(_axis) {}
+    __device__ bool operator()(const TriangleCentroid& a, const TriangleCentroid& b) const {
+        return (axis == 0) ? (a.centroid.x < b.centroid.x) :
+            (axis == 1) ? (a.centroid.y < b.centroid.y) :
+            (a.centroid.z < b.centroid.z);
+    }
+};
+
+
 // Function to build a simple BVH (medium construction method)
-void buildBVH(thrust::device_vector<F3Triangle>& triangles, thrust::device_vector<BVHNode>& nodes)
+void buildBVHWithTriangleVersion1(thrust::device_vector<F3Triangle>& triangles, thrust::device_vector<BVHNode>& nodes)
 {
     int numTriangles = triangles.size();
     nodes.resize(2 * numTriangles - 1);
@@ -604,7 +663,7 @@ void print_float3(const float3& v) {
     printf("%f %f %f\n",v.x,v.y,v.z);
 }
 
-__device__ bool rayTriangleIntersect(const F3Ray& ray, const F3Triangle& triangle, float& t) {
+__device__ bool rayTriangleIntersect(const F3Ray& ray, const F3Triangle& triangle, float& t, float3& intersectionPoint) {
     float3 edge1 = triangle.v1 - triangle.v0;
     float3 edge2 = triangle.v2 - triangle.v0;
     float3 h = cross(ray.direction, edge2);
@@ -624,10 +683,21 @@ __device__ bool rayTriangleIntersect(const F3Ray& ray, const F3Triangle& triangl
     if (v < 0.0f || u + v > 1.0f) return false;
 
     t = f * dot(edge2, q);
+
+     // Calculate the intersection point
+    if (t > 1e-6) {
+        intersectionPoint = ray.origin + t * ray.direction;
+        //printf("%f %f %f\n",intersectionPoint.x,intersectionPoint.y,intersectionPoint.z); OK
+    }
+    else
+    {
+        intersectionPoint =make_float3(INFINITY, INFINITY, INFINITY);
+    }
+
     return (t > 1e-6);
 }
 
-__global__ void rayTracingKernel(BVHNode* nodes, F3Triangle* triangles, F3Ray* rays, int* hitResults, int numRays) {
+__global__ void rayTracingKernel(BVHNode* nodes, F3Triangle* triangles, F3Ray* rays, int* hitResults, float* distance,float3* intersectionPoint, int numRays) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= numRays) return;
 
@@ -638,6 +708,8 @@ __global__ void rayTracingKernel(BVHNode* nodes, F3Triangle* triangles, F3Ray* r
 
     float closestT = INFINITY;
     int closestTriangle = -1;
+    float3 closestIntersectionPoint=make_float3(INFINITY, INFINITY, INFINITY);
+    bool isView=false;
 
     while (stackPtr > 0) {
         int nodeIdx = stack[--stackPtr];
@@ -671,10 +743,15 @@ __global__ void rayTracingKernel(BVHNode* nodes, F3Triangle* triangles, F3Ray* r
         if (node.triangleIndex != -1) {
             // Sheet: test the intersection with the triangle
             float t;
-            if (rayTriangleIntersect(ray, triangles[node.triangleIndex], t)) {
+            float3 intersectionPointT;
+            if (rayTriangleIntersect(ray, triangles[node.triangleIndex], t,intersectionPointT)) {
+
+                if (isView) printf("[%i] <%f %f %f>\n",idx,intersectionPointT.x,intersectionPointT.y,intersectionPointT.z);
+
                 if (t < closestT) {
                     closestT = t;
                     closestTriangle = node.triangleIndex;
+                    closestIntersectionPoint=intersectionPointT;
                 }
             }
         } else {
@@ -684,7 +761,10 @@ __global__ void rayTracingKernel(BVHNode* nodes, F3Triangle* triangles, F3Ray* r
         }
     }
 
-    hitResults[idx] = closestTriangle;
+    hitResults[idx]        = closestTriangle;
+    distance[idx]          = closestT;
+    intersectionPoint[idx] = closestIntersectionPoint;
+    //if (closestTriangle!=-1) { printf("t=%f\n",closestT); } OK
 }
 
 __global__ void rayTraceKernelBox(Box* boxes, Vec3 rayOrigin, Vec3 rayDir, float* results, int numBoxes) {
@@ -826,7 +906,7 @@ std::optional<Vec3> rayTriangleIntersectCPU(const Ray& ray, const Triangle& tria
 //-------------------------------------------------------------------------------------------------------------------------------------------
 
 // BEGIN:: BVH and Ray Tracing part
-void test001_IntersectionRayWithSurface()
+void test001_IntersectionRayWithSurfaceCPU()
 {
     Ray ray = { {0.5, 0.5, -0.5}, {0, 0, 1} };
     Rectangle rect = { {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 0} };
@@ -861,27 +941,56 @@ void test001_IntersectionRayWithTriangleCPU()
 }
 
 
+void test001_IntersectionRayWithPlanCPU()
+{
+    Ray ray = { {0, 0, 0}, {1, 1, 0} };
+    Vec3 planePoint = { 0, 0, 1 };  // Position
+    Vec3 planeNormal = { 0, 0, 1 }; // Normal
 
+    auto intersection = rayPlaneIntersect(ray, planePoint, planeNormal);
+    if (intersection) {
+        std::cout << "Point Intersection: ("
+            << intersection->x << ", "
+            << intersection->y << ", "
+            << intersection->z << ")\n";
+    }
+    else {
+        std::cout << "No intersection.\n";
+    }
+}
+
+
+// Now in GPU AMD HIP with rocThrust
 
 void test002_with_triangle(const std::string& filename)
 {
+
+    std::cout<<"\n";
+    std::cout<<"[INFO]: BEGIN BVH WITH TRIANGLE\n";
+    std::cout<<"[INFO]: LOAD SCENE >>>"<<filename<<"\n";
+
     // Load the mesh
     std::vector<F3Triangle> hostTriangles;
     loadOBJTriangle(filename, hostTriangles);
     //getchar();
-    // Formulation triangle in file v %f %f %f   v %f %f %f   f %u %u %u   <<float3>,<float3>,<float3>>
+    // Formulation triangle in file v %f %f %f  ... %u %u %u   <float3,float,float> and index
       
     // Transfer triangles to GPU
     thrust::device_vector<F3Triangle> deviceTriangles = hostTriangles;
 
     // Building the BVH
     thrust::device_vector<BVHNode> deviceNodes;
-    buildBVH(deviceTriangles, deviceNodes);
+    buildBVHWithTriangleVersion1(deviceTriangles, deviceNodes);
 
-    std::cout << "BVH built with " << deviceNodes.size() << " nodes" << std::endl;
+
+    std::cout<<"[INFO]: BVH built with " << deviceNodes.size() << " nodes" << std::endl;
 
     // Generate test several rays
+    std::cout<<"[INFO]: GENERATE TEST SEVERAL RAYS\n";
     const int numRays = 1024;
+
+    thrust::host_vector<float3> hostIntersectionPoint(numRays);
+    
     thrust::host_vector<F3Ray> hostRays(numRays);
     for (int i = 0; i < numRays; ++i) {
         hostRays[i].origin = make_float3(0, 0, 10);
@@ -891,11 +1000,14 @@ void test002_with_triangle(const std::string& filename)
             -1
         );
         hostRays[i].direction = normalize(hostRays[i].direction);
+        hostIntersectionPoint[i]=make_float3(INFINITY, INFINITY, INFINITY);
     }
-    thrust::device_vector<F3Ray> deviceRays = hostRays;
+    thrust::device_vector<F3Ray>  deviceRays              = hostRays;
+    thrust::device_vector<float3> deviceIntersectionPoint = hostIntersectionPoint;
 
     // Allocate memory for the results
-    thrust::device_vector<int> deviceHitResults(numRays);
+    thrust::device_vector<int>   deviceHitResults(numRays);
+    thrust::device_vector<float> deviceDistanceResults(numRays);
 
     // Start the ray tracing kernel
     int threadsPerBlock = 256;
@@ -905,19 +1017,40 @@ void test002_with_triangle(const std::string& filename)
         thrust::raw_pointer_cast(deviceTriangles.data()),
         thrust::raw_pointer_cast(deviceRays.data()),
         thrust::raw_pointer_cast(deviceHitResults.data()),
+        thrust::raw_pointer_cast(deviceDistanceResults.data()),
+        thrust::raw_pointer_cast(deviceIntersectionPoint.data()),
         numRays
     );
+    //TODO add parameter distance
 
     // Retrieve the results
-    thrust::host_vector<int> hostHitResults = deviceHitResults;
+    thrust::host_vector<int>   hostHitResults = deviceHitResults;
+    thrust::host_vector<float> hostDistanceResults = deviceDistanceResults;
+    hostIntersectionPoint=deviceIntersectionPoint;
+
     // Count intersections
-    int hitCount = thrust::count_if(hostHitResults.begin(), hostHitResults.end(),
-                                    thrust::placeholders::_1 != -1);
-    std::cout << "Number of rays that intersected the mesh : " << hitCount << " / " << numRays << std::endl;
+    int hitCount = thrust::count_if(hostHitResults.begin(), hostHitResults.end(),thrust::placeholders::_1 != -1);
+    std::cout<<"[INFO]: Number of rays that intersected the mesh : " << hitCount << " / " << numRays << std::endl;
+    for (int i=0;i<hostHitResults.size();++i)
+    {
+        if (hostHitResults[i]!=-1)
+        {
+            std::cout<<"      Intersection found with Num Ray ["<<i<<"] ori= <"<<hostRays[i].origin.x<<","<<hostRays[i].origin.y<<","<<hostRays[i].origin.z<<"> ";
+            std::cout<<" dir= <"<<hostRays[i].direction.x<<","<<hostRays[i].direction.y<<","<<hostRays[i].direction.z<<"> ";
+            std::cout<<" Hit= "<<hostHitResults[i]<<" min dist="<<hostDistanceResults[i];
+            std::cout<<" IntersectionPoint= <"<<hostIntersectionPoint[i].x<<","<<hostIntersectionPoint[i].y<<","<<hostIntersectionPoint[i].z<<"> "<<"\n";
+        }
+    }
+    std::cout<<"\n";
+    std::cout<<"[INFO]: END BVH WITH TRIANGLE\n";
+    std::cout<<"\n";
 }
 
-void test002_with_box(const std::string& filename)
+
+void test003_with_Simple_Box(const std::string& filename)
 {
+    std::cout<<"\n";
+    std::cout<<"[INFO]: BEGIN BVH WITH SIMPLE BOX\n";
     // Load the mesh from an OBJ file
     std::vector<Box> boxes = loadBoxes(filename);
     // Formulation box; box.min.x box.min.y box.min.z  box.max.x box.max.y box.max.z used in Feelpp BVH
@@ -942,17 +1075,24 @@ void test002_with_box(const std::string& filename)
     // Show results
     for (int i = 0; i < numBoxes; ++i) {
         if (results[i] >= 0) {
-            std::cout << "Intersection found with box " << i << " à t = " << results[i] << std::endl;
+            std::cout << "[INFO]: Intersection found with box " << i << " à t = " << results[i] << std::endl;
         }
     }
+
+    std::cout<<"\n";
+    std::cout<<"[INFO]: END BVH WITH SIMPLE BOX";
+    std::cout<<"\n";
 }
 // END:: BVH and Ray Tracing part
 
 //-------------------------------------------------------------------------------------------------------------------------------------------
 //===========================================================================================================================================
 
+  
 
 
+  
+ 
 
 int main(){
     int count, device;
@@ -966,46 +1106,46 @@ int main(){
     loadGeoGmsh(filename);
     std::cout << "[INFO]: WELL DONE :-) LOAD .GEO!" << "\n";
 
-    std::cout << "--------------------------------" << "\n";
+    std::cout << "------------------------------------------------------------------------------------------------" << "\n";
 
     filename= "cubic2.msh";
     loadMshGmsh(filename);
     std::cout << "[INFO]: WELL DONE :-) LOAD .MSH!" << "\n";
-    std::cout << "--------------------------------" << "\n";
+    std::cout << "------------------------------------------------------------------------------------------------" << "\n";
 
 
 
-    test001_IntersectionRayWithSurface();
+    test001_IntersectionRayWithSurfaceCPU();
     std::cout << "[INFO]: WELL DONE :-) IntersectionRayWithSurface!" << "\n";
     
-    std::cout << "--------------------------------" << "\n";
+    std::cout << "------------------------------------------------------------------------------------------------" << "\n";
     
     test001_IntersectionRayWithTriangleCPU();
     std::cout << "[INFO]: WELL DONE :-) IntersectionRayWithTriangle!" << "\n";
 
-    std::cout << "--------------------------------" << "\n";
+    std::cout << "------------------------------------------------------------------------------------------------" << "\n";
     filename = "Triangle.obj";
     test002_with_triangle(filename);
-    std::cout << "[INFO]: WELL DONE :-) Triangle!" << "\n";
+    std::cout << "[INFO]: WELL DONE :-)!" << "\n";
 
 
-    std::cout << "--------------------------------" << "\n";
+    std::cout << "------------------------------------------------------------------------------------------------" << "\n";
     filename = "Triangle2Cube.obj";
     test002_with_triangle(filename);
-    std::cout << "[INFO]: WELL DONE :-) Triangle!" << "\n";
+    std::cout << "[INFO]: WELL DONE :-)" << "\n";
 
 
-    std::cout << "--------------------------------" << "\n";
+    std::cout << "------------------------------------------------------------------------------------------------" << "\n";
     filename = "Box.obj";
-    test002_with_box(filename);
+    test003_with_Simple_Box(filename);
     std::cout << "[INFO]: WELL DONE :-) Box!"<<"\n";
 
-    std::cout << "--------------------------------" << "\n";
+    std::cout << "------------------------------------------------------------------------------------------------" << "\n";
 
     //test002_with_triangle2(filename);
     std::cout << "[INFO]: WELL DONE :-) Part 3!"<<"\n";
 
-    std::cout << "--------------------------------" << "\n";
+    std::cout << "------------------------------------------------------------------------------------------------" << "\n";
 
     std::cout << "[INFO]: WELL DONE :-) FINISHED !"<<"\n";
 
