@@ -14,7 +14,8 @@
 #include <vector>
 #include <fstream>
 #include <optional>
-
+#include <random>
+#include <cfloat>
 
 
   
@@ -47,8 +48,8 @@
 
 #define SWAP(T, a, b) do { T tmp = a; a = b; b = tmp; } while (0)
  
- struct AABB {
-    float3 lower, upper;
+struct AABB {
+    float3 lower, upper; //not used
 };
 
 struct Object {
@@ -75,6 +76,11 @@ struct Vec3 {
     }
 
     __host__ __device__
+    Vec3 operator*(const Vec3& other) const {
+        return Vec3(x * other.x, y * other.y, z * other.z);
+    }
+
+    __host__ __device__
     float dot(const Vec3& v) const {
         return x * v.x + y * v.y + z * v.z;
     }
@@ -87,6 +93,42 @@ struct Vec3 {
             x * v.y - y * v.x
         };
     }
+    __host__ __device__
+    Vec3 () : x(0), y(0), z(0) {} 
+
+    __host__ __device__
+    Vec3 (float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}  
+
+    __host__ __device__
+    Vec3 init(float x, float y, float z) {
+        Vec3 v;
+        v.x = x;
+        v.y = y;
+        v.z = z;
+        return v;
+    }
+
+    __host__ __device__
+    Vec3 float3ToVec3(const float3& f) {
+        return Vec3(f.x, f.y, f.z);
+    }
+
+/*
+    __host__ __device__
+    bool operator==(const Vec3& v) const {
+        return (x == v.x) && (y == v.y) && (z == v.z);
+    }
+
+    __host__ __device__
+    Vec3& operator=(const Vec3& v) {
+        if (this != &v) {  
+            x = v.x;
+            y = v.y;
+            z = v.z;
+        }
+        return *this;
+    }
+*/
 };
 
 
@@ -189,7 +231,9 @@ struct BVHNode {
     float3 min, max; // Min and max coordinates of the bounding box
     int leftChild, rightChild; // Indices of child nodes (-1 for leaves)
     int triangleIndex;
-    //int start, count; // Range of indices of points in the node to be seen later
+    int splitAxis; //add
+    int boxIndex; //add
+   
 };
 
 
@@ -237,7 +281,12 @@ std::vector<Triangle> loadOBJVec(const std::string& filename)
         std::string prefix;
         iss >> prefix;
 
-        if (prefix == "v") {
+
+        if (prefix.find("vt") != std::string::npos) { /*...*/ }
+        else if (prefix.find("vn") != std::string::npos) { /*...*/ }
+        else if (prefix.find("s") != std::string::npos) { /*...*/ }
+
+        else if (prefix == "v") {
             Vec3 vertex;
             iss >> vertex.x >> vertex.y >> vertex.z;
             vertices.push_back(vertex);
@@ -266,6 +315,107 @@ std::vector<Box> loadBoxes(const std::string& filename)
     }
     return boxes;
 }
+
+//-------------------------------------------------------------------------------------------------------------------------------------------
+//===========================================================================================================================================
+
+float3 toFloat3(const Vec3& v) { return {v.x, v.y, v.z}; }
+
+std::vector<F3Triangle> boxToTriangles(const Box& box) {
+    std::vector<F3Triangle> triangles;
+    triangles.reserve(12);
+
+    Vec3 vertices[8] = {
+        {box.min.x, box.min.y, box.min.z},
+        {box.max.x, box.min.y, box.min.z},
+        {box.max.x, box.max.y, box.min.z},
+        {box.min.x, box.max.y, box.min.z},
+        {box.min.x, box.min.y, box.max.z},
+        {box.max.x, box.min.y, box.max.z},
+        {box.max.x, box.max.y, box.max.z},
+        {box.min.x, box.max.y, box.max.z}
+    };
+
+    // Definition of the 12 triangles (2 per face)
+    int indices[12][3] = {
+        {0, 1, 2}, {0, 2, 3}, // Front face
+        {1, 5, 6}, {1, 6, 2}, // Right face
+        {5, 4, 7}, {5, 7, 6}, // Back face
+        {4, 0, 3}, {4, 3, 7}, // Left face
+        {3, 2, 6}, {3, 6, 7}, // Top face
+        {4, 5, 1}, {4, 1, 0}  // Bottom face
+    };
+
+    for (int i = 0; i < 12; ++i) {
+        F3Triangle tri;
+        tri.v0 = toFloat3(vertices[indices[i][0]]);
+        tri.v1 = toFloat3(vertices[indices[i][1]]);
+        tri.v2 = toFloat3(vertices[indices[i][2]]);
+        triangles.push_back(tri);
+    }
+    return triangles;
+}
+
+
+//===========================================================================================================================================
+//-------------------------------------------------------------------------------------------------------------------------------------------
+
+
+
+//-------------------------------------------------------------------------------------------------------------------------------------------
+//===========================================================================================================================================
+
+
+//===========================================================================================================================================
+//-------------------------------------------------------------------------------------------------------------------------------------------
+//
+// Random .OBJ
+
+float randomFloat() {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    static std::uniform_real_distribution<> dis(-1.0, 1.0);
+    return dis(gen);
+}
+
+void buildRandomFileObj(const std::string& filename,int numTriangles) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        std::cerr << "Error: Unable to open file " << filename << std::endl;
+        return;
+    }
+
+    file << "# Random" << numTriangles << "Triangles.obj\n";
+    file << "# " << numTriangles * 3 << " vertices, " << numTriangles << " triangles\n\n";
+
+    file << "# Vertices\n";
+    float3 position;
+ 
+
+    for (int i = 0; i < numTriangles * 3; ++i) {
+        if (i%3==0) { 
+            position.x=randomFloat()*100.0;
+            position.y=randomFloat()*100.0;
+            position.z=randomFloat()*100.0;
+        }
+
+        float x = randomFloat()+position.x;
+        float y = randomFloat()+position.y;
+        float z = randomFloat()+position.z;
+        file << "v " << x << " " << y << " " << z << "\n";
+    }
+
+    file << "\n# Faces (triangles)\n";
+    for (int i = 0; i < numTriangles; ++i) {
+        int v1 = i * 3 + 1;
+        int v2 = i * 3 + 2;
+        int v3 = i * 3 + 3;
+        file << "f " << v1 << " " << v2 << " " << v3 << "\n";
+    }
+
+    file.close();
+}
+
 
 //-------------------------------------------------------------------------------------------------------------------------------------------
 //===========================================================================================================================================
@@ -443,8 +593,26 @@ void loadMshGmsh(const std::string& filename)
 //-------------------------------------------------------------------------------------------------------------------------------------------
 //===========================================================================================================================================
 
+__device__ 
+float3 calculateTriangleCentroid(const F3Triangle& triangle) {
+    return make_float3(
+        (triangle.v0.x + triangle.v1.x + triangle.v2.x) / 3.0f,
+        (triangle.v0.y + triangle.v1.y + triangle.v2.y) / 3.0f,
+        (triangle.v0.z + triangle.v1.z + triangle.v2.z) / 3.0f
+    );
+}
 
-__device__ float3 calculateCentroid(const Box& box) {
+struct CompareTriangleCentroid {
+    int axis;
+    CompareTriangleCentroid(int _axis) : axis(_axis) {}
+    __device__ bool operator()(const TriangleCentroid& a, const TriangleCentroid& b) const {
+        return (axis == 0) ? (a.centroid.x < b.centroid.x) :
+            (axis == 1) ? (a.centroid.y < b.centroid.y) :
+            (a.centroid.z < b.centroid.z);
+    }
+};
+
+__device__ float3 calculateBoxCentroid(const Box& box) {
     return make_float3(
         (box.min.x + box.max.x) * 0.5f,
         (box.min.y + box.max.y) * 0.5f,
@@ -452,10 +620,9 @@ __device__ float3 calculateCentroid(const Box& box) {
     );
 }
 
-
-struct CompareBoxCentroid {
+struct CompareBoxCentroidAlpha {
     int axis;
-    CompareBoxCentroid(int _axis) : axis(_axis) {}
+    CompareBoxCentroidAlpha(int _axis) : axis(_axis) {}
     __device__ bool operator()(const BoxCentroid& a, const BoxCentroid& b) const {
         return (axis == 0) ? (a.centroid.x < b.centroid.x) :
             (axis == 1) ? (a.centroid.y < b.centroid.y) :
@@ -463,10 +630,192 @@ struct CompareBoxCentroid {
     }
 };
 
+struct CompareBoxCentroid {
+    int axis;
+    CompareBoxCentroid(int a) : axis(a) {}
+    __device__ bool operator()(const BoxCentroid& a, const BoxCentroid& b) const {
+        return (&a.centroid.x)[axis] < (&b.centroid.x)[axis];
+    }
+};
 
 
 
-//-------
+
+
+//===========================================================================================================================================
+//-------------------------------------------------------------------------------------------------------------------------------------------
+
+//-------       ----------
+
+// With box input
+
+
+/*
+std::vector<Box> generateRandomBoxes(int numBoxes,float m,float M) {
+    std::vector<Box> boxes;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_real_distribution<> dis(m,M);
+
+    for (int i = 0; i < numBoxes; ++i) {
+		Vec3 min,max; 
+		min.x=dis(gen);  
+		min.y=dis(gen);  
+		min.z=dis(gen);
+		max.x=min.x + std::abs(dis(gen));
+		max.y=min.y + std::abs(dis(gen));
+		max.z=min.z + std::abs(dis(gen));
+        boxes.push_back({min, max});
+    }
+    return boxes;
+}
+*/
+
+
+void buildBVHWithBox(thrust::device_vector<Box>& boxes, 
+                     thrust::device_vector<BVHNode>& nodes,
+                     int maxDepth = 20,
+                     int minBoxesPerNode = 2,
+                     float splitThreshold = 0.5f)
+{
+    int numBoxes = boxes.size();
+    nodes.resize(2 * numBoxes - 1);
+
+    // Calculate centroids and create initial ordering
+    thrust::device_vector<BoxCentroid> centroids(numBoxes);
+    thrust::transform(thrust::device, boxes.begin(), boxes.end(), centroids.begin(),
+        [boxes = thrust::raw_pointer_cast(boxes.data())] __device__ (const Box& box) {
+            return BoxCentroid{ calculateBoxCentroid(box), static_cast<int>(&box - boxes) };
+        }
+    );
+
+    // Lambda to build a subtree
+    std::function<void(int, int, int, int)>  buildSubtree = [&](int nodeIndex, int start, int end, int depth) {
+        BVHNode* raw_ptr = thrust::raw_pointer_cast(nodes.data());
+        BVHNode& node = raw_ptr[nodeIndex];
+
+        thrust::for_each(thrust::device,
+            boxes.begin() + start, boxes.begin() + end,
+            [&node] __device__ (const Box& box) {
+                // Update min
+                node.min.x = fminf(node.min.x, box.min.x);
+                node.min.y = fminf(node.min.y, box.min.y);
+                node.min.z = fminf(node.min.z, box.min.z);
+                
+                // Update max
+                node.max.x = fmaxf(node.max.x, box.max.x);
+                node.max.y = fmaxf(node.max.y, box.max.y);
+                node.max.z = fmaxf(node.max.z, box.max.z);
+            }
+        );
+
+        // Leaf node
+        if (end - start <= minBoxesPerNode || depth >= maxDepth) {
+            //node.triangleIndex = centroids[start].index;
+            BoxCentroid* centroid_ptr = thrust::raw_pointer_cast(centroids.data());
+            node.boxIndex = centroid_ptr[start].index;
+            //node.boxIndex = centroids[start].index;
+            node.leftChild = node.rightChild = -1;
+            return;
+        }
+
+        // Choose split axis (use the axis with the largest extent)
+        float3 extent = make_float3(
+            node.max.x - node.min.x,
+            node.max.y - node.min.y,
+            node.max.z - node.min.z
+        );
+        int axis = (extent.x > extent.y && extent.x > extent.z) ? 0 :
+                   (extent.y > extent.z) ? 1 : 2;
+
+        // Sort boxes along the chosen axis
+        thrust::sort(thrust::device, centroids.begin() + start, centroids.begin() + end,
+            CompareBoxCentroid(axis));
+
+        // Find split point (using splitThreshold)
+        int mid = start + static_cast<int>((end - start) * splitThreshold);
+
+        // Recursively build left and right subtrees
+        node.leftChild = 2 * nodeIndex + 1;
+        node.rightChild = 2 * nodeIndex + 2;
+        node.boxIndex = -1;
+
+        buildSubtree(node.leftChild, start, mid, depth + 1);
+        buildSubtree(node.rightChild, mid, end, depth + 1);
+    };
+
+    // Start building the tree from the root
+    buildSubtree(0, 0, numBoxes, 0);
+}
+
+
+
+__device__ bool intersectRayBox(const F3Ray& ray, const Box& box, float& tmin, float& tmax)
+ {
+    Vec3 boxMin=Vec3(box.min);
+    Vec3 boxMax=Vec3(box.max);
+
+    Vec3 vray_direction; vray_direction.float3ToVec3(ray.direction);
+    Vec3 vray_origin;    vray_origin.float3ToVec3(ray.origin);
+    Vec3 invDir = Vec3(1.0f / vray_direction.x, 1.0f / vray_direction.y, 1.0f / vray_direction.z);
+    Vec3 t0 = (boxMin - vray_origin) * invDir;
+    Vec3 t1 = (boxMax - vray_origin) * invDir;
+    Vec3 tmin3 = Vec3(fminf(t0.x, t1.x), fminf(t0.y, t1.y), fminf(t0.z, t1.z));
+    Vec3 tmax3 = Vec3(fmaxf(t0.x, t1.x), fmaxf(t0.y, t1.y), fmaxf(t0.z, t1.z));
+    tmin = fmaxf(tmin3.x, fmaxf(tmin3.y, tmin3.z));
+    tmax = fminf(tmax3.x, fminf(tmax3.y, tmax3.z));
+    return tmax >= tmin && tmax > 0;
+}
+
+
+struct RayTracer {
+    const BVHNode* bvh;
+    const Box* boxes;
+
+    RayTracer(const BVHNode* b, const Box* bx) : bvh(b), boxes(bx) {}
+
+    __device__
+    int operator()(const F3Ray& ray) const {
+        int stack[64];
+        int stackPtr = 0;
+        stack[stackPtr++] = 0;  
+        while (stackPtr > 0) {
+            int nodeIdx = stack[--stackPtr];
+            const BVHNode& node = bvh[nodeIdx];
+            float tmin, tmax;
+            Box node1; 
+            Vec3  TMP; 
+            TMP.float3ToVec3(node.min);
+            node1.min=Vec3(TMP); 
+            TMP.float3ToVec3(node.max);
+            node1.max=Vec3(TMP); 
+            if (intersectRayBox(ray, node1, tmin, tmax)) {
+                if (node.boxIndex != -1) {
+                    const Box& box = boxes[node.boxIndex];
+                    if (intersectRayBox(ray, box, tmin, tmax)) {
+                        return node.boxIndex;
+                    }
+                } else {
+                    stack[stackPtr++] = node.leftChild;
+                    stack[stackPtr++] = node.rightChild;
+                }
+            }
+        }
+        return -1; // No intersection
+    }
+};
+
+
+//-------       ----------
+
+//-------------------------------------------------------------------------------------------------------------------------------------------
+//===========================================================================================================================================
+
+
+
+
+
+
 
 // Intersection function between a ray and a plan
 __host__ __device__ std::optional<Vec3> rayPlaneIntersect(const Ray& ray, const Vec3& planePoint, const Vec3& planeNormal) {
@@ -474,9 +823,9 @@ __host__ __device__ std::optional<Vec3> rayPlaneIntersect(const Ray& ray, const 
 
     float denom = planeNormal.dot(ray.direction);
 
-    // Vérification si le rayon est parallèle au plan
+    // Check if the ray is parallel to the plane
     if (fabs(denom) < epsilon) {
-        return {}; // Pas d'intersection
+        return {}; // No intersection
     }
 
     Vec3 p0l0 = planePoint - ray.origin;
@@ -561,25 +910,6 @@ void calculateBoundingBox(const F3Triangle& triangle, float3& min, float3& max)
 }
 
 
-__device__ 
-float3 calculateCentroid(const F3Triangle& triangle) {
-    return make_float3(
-        (triangle.v0.x + triangle.v1.x + triangle.v2.x) / 3.0f,
-        (triangle.v0.y + triangle.v1.y + triangle.v2.y) / 3.0f,
-        (triangle.v0.z + triangle.v1.z + triangle.v2.z) / 3.0f
-    );
-}
-
-
-struct CompareTriangleCentroid {
-    int axis;
-    CompareTriangleCentroid(int _axis) : axis(_axis) {}
-    __device__ bool operator()(const TriangleCentroid& a, const TriangleCentroid& b) const {
-        return (axis == 0) ? (a.centroid.x < b.centroid.x) :
-            (axis == 1) ? (a.centroid.y < b.centroid.y) :
-            (a.centroid.z < b.centroid.z);
-    }
-};
 
 
 // Function to build a simple BVH (medium construction method)
@@ -590,7 +920,6 @@ void buildBVHWithTriangleVersion1(thrust::device_vector<F3Triangle>& triangles, 
 
     // Initialize the sheets
     for (int i = 0; i < numTriangles; ++i) {
-        //BVHNode& node = nodes[numTriangles - 1 + i];
         BVHNode* raw_ptr = thrust::raw_pointer_cast(nodes.data());
         BVHNode& node = raw_ptr[numTriangles - 1 + i];
 
@@ -601,7 +930,6 @@ void buildBVHWithTriangleVersion1(thrust::device_vector<F3Triangle>& triangles, 
 
     // Build the internal nodes
     for (int i = numTriangles - 2; i >= 0; --i) {
-        //BVHNode& node = nodes[i];
         BVHNode* raw_ptr = thrust::raw_pointer_cast(nodes.data());
         BVHNode& node = raw_ptr[i];
         int leftChild = 2 * i + 1;
@@ -613,7 +941,6 @@ void buildBVHWithTriangleVersion1(thrust::device_vector<F3Triangle>& triangles, 
 
         BVHNode leftNode = nodes[leftChild];
         BVHNode rightNode = nodes[rightChild];
-        //float v=leftNode.min.x;
         node.min = make_float3(fminf(leftNode.min.x, rightNode.min.x),
                                fminf(leftNode.min.y, rightNode.min.y),
                                fminf(leftNode.min.z, rightNode.min.z));
@@ -624,6 +951,215 @@ void buildBVHWithTriangleVersion1(thrust::device_vector<F3Triangle>& triangles, 
                                fmaxf(leftNode.max.z, rightNode.max.z));
     }
 }
+
+
+
+
+
+//ADDENDUM
+void buildBVHWithTriangleVersion2(thrust::device_vector<F3Triangle>& triangles, thrust::device_vector<BVHNode>& nodes)
+{
+    int numTriangles = triangles.size();
+    nodes.resize(2 * numTriangles - 1);
+
+    // Calculate centroids and create initial ordering
+    thrust::device_vector<TriangleCentroid> centroids(numTriangles);
+    auto centroid_iterator = thrust::make_transform_iterator(
+    triangles.begin(),
+        [triangles_ptr = thrust::raw_pointer_cast(triangles.data())] __host__ __device__ (const F3Triangle& tri) {
+            return TriangleCentroid{ 
+                calculateTriangleCentroid(tri), 
+                static_cast<int>(&tri - triangles_ptr) // (int)(&tri - triangles_ptr);
+            };
+            }
+    );
+
+    thrust::copy( thrust::device,centroid_iterator, centroid_iterator + triangles.size(), centroids.begin());
+
+    // Lambda to build a subtree
+    std::function<void(int, int, int, int)> buildSubtree = [&](int nodeIndex, int start, int end, int depth) {
+        BVHNode* raw_ptr = thrust::raw_pointer_cast(nodes.data());
+        BVHNode& node = raw_ptr[nodeIndex];
+
+        // Calculate bounding box for this node
+        float3 min = make_float3(FLT_MAX, FLT_MAX, FLT_MAX);
+        float3 max = make_float3(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+        for (int i = start; i < end; ++i) {
+            //const F3Triangle& tri = triangles[centroids[i].index]; 
+            const TriangleCentroid* centroid_ptr = thrust::raw_pointer_cast(centroids.data());
+            const F3Triangle& tri = triangles[centroid_ptr[i].index];
+            calculateBoundingBox(tri, min, max);
+        }
+        node.min = min;
+        node.max = max;
+
+        // Leaf node
+        if (end - start <= 1) {
+            //node.triangleIndex = centroids[start].index;
+            TriangleCentroid* centroid_ptr = thrust::raw_pointer_cast(centroids.data());
+            node.triangleIndex = centroid_ptr[start].index;
+            node.leftChild = node.rightChild = -1;
+            return;
+        }
+
+        // Choose split axis (alternate between x, y, z based on depth)
+        int axis = depth % 3;
+
+        // Sort triangles along the chosen axis
+        thrust::sort(thrust::device, centroids.begin() + start, centroids.begin() + end, CompareTriangleCentroid(axis));
+
+        // Find split point (median)
+        int mid = (start + end) / 2;
+
+        // Recursively build left and right subtrees
+        node.leftChild = 2 * nodeIndex + 1;
+        node.rightChild = 2 * nodeIndex + 2;
+        node.triangleIndex = -1;
+
+        buildSubtree(node.leftChild, start, mid, depth + 1);
+        buildSubtree(node.rightChild, mid, end, depth + 1);
+        };
+
+    // Start building the tree from the root
+    buildSubtree(0, 0, numTriangles, 0);
+}
+
+
+//ADDENDUM
+// Version 3
+
+__global__ void initializeLeaves(F3Triangle* triangles, BVHNode* nodes, int numTriangles)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < numTriangles) {
+        BVHNode& node = nodes[numTriangles - 1 + i];
+        calculateBoundingBox(triangles[i], node.min, node.max);
+        node.triangleIndex = i;
+        node.leftChild = node.rightChild = -1;
+    }
+}
+
+__global__ void buildInternalNodes(BVHNode* nodes, int numTriangles)
+{
+    int i = numTriangles - 2 - (blockIdx.x * blockDim.x + threadIdx.x);
+    if (i >= 0) {
+        BVHNode& node = nodes[i];
+        int leftChild = 2 * i + 1;
+        int rightChild = 2 * i + 2;
+
+        node.leftChild = leftChild;
+        node.rightChild = rightChild;
+        node.triangleIndex = -1;
+
+        BVHNode leftNode = nodes[leftChild];
+        BVHNode rightNode = nodes[rightChild];
+        node.min = make_float3(fminf(leftNode.min.x, rightNode.min.x),
+                               fminf(leftNode.min.y, rightNode.min.y),
+                               fminf(leftNode.min.z, rightNode.min.z));
+
+        node.max = make_float3(fmaxf(leftNode.max.x, rightNode.max.x),
+                               fmaxf(leftNode.max.y, rightNode.max.y),
+                               fmaxf(leftNode.max.z, rightNode.max.z));
+    }
+}
+
+void buildBVHWithTriangleVersion3(thrust::device_vector<F3Triangle>& triangles, thrust::device_vector<BVHNode>& nodes)
+{
+    int numTriangles = triangles.size();
+    nodes.resize(2 * numTriangles - 1);
+    // Initialize the leaves
+    int blockSize = 256;
+    int numBlocks = (numTriangles + blockSize - 1) / blockSize;
+    hipLaunchKernelGGL(initializeLeaves, dim3(numBlocks), dim3(blockSize), 0, 0, 
+        thrust::raw_pointer_cast(triangles.data()),
+        thrust::raw_pointer_cast(nodes.data()),
+        numTriangles);
+    // Build the internal nodes
+    numBlocks = ((numTriangles - 1) + blockSize - 1) / blockSize;
+    hipLaunchKernelGGL(buildInternalNodes, dim3(numBlocks), dim3(blockSize), 0, 0, thrust::raw_pointer_cast(nodes.data()),numTriangles);
+    // Synchronize to ensure all kernels have completed
+    hipDeviceSynchronize();
+}
+
+//---------------------------------------------------------------------------------------------------------------------
+
+
+// initialize the leaves
+struct InitializeLeavesFunctor
+{
+    const F3Triangle* triangles;
+
+    InitializeLeavesFunctor(const F3Triangle* tri) : triangles(tri) {}
+
+    __host__ __device__
+    BVHNode operator()(int i) const
+    {
+        BVHNode node;
+        calculateBoundingBox(triangles[i], node.min, node.max);
+        node.triangleIndex = i;
+        node.leftChild = node.rightChild = -1;
+        return node;
+    }
+};
+
+// build the internal nodes
+struct BuildInternalNodesFunctor
+{
+    const BVHNode* nodes;
+    int numTriangles;
+
+    BuildInternalNodesFunctor(const BVHNode* n, int num) : nodes(n), numTriangles(num) {}
+
+    __host__ __device__
+    BVHNode operator()(int i) const
+    {
+        i = numTriangles - 2 - i;
+        BVHNode node;
+        int leftChild = 2 * i + 1;
+        int rightChild = 2 * i + 2;
+
+        node.leftChild = leftChild;
+        node.rightChild = rightChild;
+        node.triangleIndex = -1;
+
+        const BVHNode& leftNode = nodes[leftChild];
+        const BVHNode& rightNode = nodes[rightChild];
+        node.min = make_float3(fminf(leftNode.min.x, rightNode.min.x),
+                               fminf(leftNode.min.y, rightNode.min.y),
+                               fminf(leftNode.min.z, rightNode.min.z));
+
+        node.max = make_float3(fmaxf(leftNode.max.x, rightNode.max.x),
+                               fmaxf(leftNode.max.y, rightNode.max.y),
+                               fmaxf(leftNode.max.z, rightNode.max.z));
+        return node;
+    }
+};
+
+void buildBVHWithTriangleVersion4(thrust::device_vector<F3Triangle>& triangles, thrust::device_vector<BVHNode>& nodes)
+{
+    int numTriangles = triangles.size();
+    nodes.resize(2 * numTriangles - 1);
+
+    // Initialize the leaves
+    thrust::transform(
+        thrust::device,
+        thrust::make_counting_iterator(0),
+        thrust::make_counting_iterator(numTriangles),
+        nodes.begin() + (numTriangles - 1),
+        InitializeLeavesFunctor(thrust::raw_pointer_cast(triangles.data()))
+    );
+
+    // Build the internal nodes
+    thrust::transform(
+        thrust::device,
+        thrust::make_counting_iterator(0),
+        thrust::make_counting_iterator(numTriangles - 1),
+        nodes.begin(),
+        BuildInternalNodesFunctor(thrust::raw_pointer_cast(nodes.data()), numTriangles)
+    );
+}
+
+//---------------------------------------------------------------------------------------------------------------------
 
 // Function to make a dot
 __host__ __device__
@@ -981,6 +1517,9 @@ void test002_with_triangle(const std::string& filename)
     // Building the BVH
     thrust::device_vector<BVHNode> deviceNodes;
     buildBVHWithTriangleVersion1(deviceTriangles, deviceNodes);
+    //buildBVHWithTriangleVersion2(deviceTriangles, deviceNodes);
+    //buildBVHWithTriangleVersion3(deviceTriangles, deviceNodes);
+    //buildBVHWithTriangleVersion4(deviceTriangles, deviceNodes);
 
 
     std::cout<<"[INFO]: BVH built with " << deviceNodes.size() << " nodes" << std::endl;
@@ -1083,6 +1622,55 @@ void test003_with_Simple_Box(const std::string& filename)
     std::cout<<"[INFO]: END BVH WITH SIMPLE BOX";
     std::cout<<"\n";
 }
+
+
+
+void test004_with_Box(const std::string& filename)
+{
+    std::cout<<"\n";
+    std::cout<<"[INFO]: BEGIN BVH WITH BOX\n";
+    // Load the mesh from an OBJ file
+    std::vector<Box> boxes = loadBoxes(filename);
+    thrust::device_vector<Box> deviceBoxes = boxes;
+    thrust::device_vector<BVHNode> deviceNodes;
+    buildBVHWithBox(deviceBoxes, deviceNodes);
+    std::cout << "Number of BVH nodes created: " << deviceNodes.size() << std::endl;
+
+	const int numRays = 10;
+    thrust::host_vector<F3Ray> hostRays(numRays);
+    for (int i = 0; i < numRays; ++i) {
+        hostRays[i].origin = make_float3(0, 0, 10);
+        hostRays[i].direction = make_float3(
+            (float)rand() / RAND_MAX * 2 - 1,
+            (float)rand() / RAND_MAX * 2 - 1,
+            -1
+        );
+        hostRays[i].direction = normalize(hostRays[i].direction);
+    }
+    thrust::device_vector<F3Ray>  deviceRays = hostRays;
+
+    RayTracer tracer(thrust::raw_pointer_cast(deviceNodes.data()),
+                     thrust::raw_pointer_cast(deviceBoxes.data()));
+     
+	thrust::device_vector<int> results(numRays);
+    thrust::transform(deviceRays.begin(), deviceRays.end(), results.begin(), tracer);
+
+	// Results
+    thrust::host_vector<int> hostResults = results;
+    for (int i = 0; i < numRays; ++i) {
+        if (hostResults[i] != -1) {
+            std::cout << "Ray " << i << " touched the index box : " << hostResults[i] << std::endl;
+        } else {
+            std::cout << "Ray " << i << " no hit !" << std::endl;
+        }
+    }
+
+    std::cout<<"\n";
+    std::cout<<"[INFO]: END BVH WITH BOX";
+    std::cout<<"\n";
+}
+
+
 // END:: BVH and Ray Tracing part
 
 //-------------------------------------------------------------------------------------------------------------------------------------------
@@ -1139,15 +1727,17 @@ int main(){
     filename = "Box.obj";
     test003_with_Simple_Box(filename);
     std::cout << "[INFO]: WELL DONE :-) Box!"<<"\n";
-
     std::cout << "------------------------------------------------------------------------------------------------" << "\n";
 
-    //test002_with_triangle2(filename);
-    std::cout << "[INFO]: WELL DONE :-) Part 3!"<<"\n";
+    filename = "Box.obj";
+    test004_with_Box(filename);
+    std::cout << "[INFO]: WELL DONE :-) Part 4!"<<"\n";
 
     std::cout << "------------------------------------------------------------------------------------------------" << "\n";
 
     std::cout << "[INFO]: WELL DONE :-) FINISHED !"<<"\n";
+
+    //buildRandomFileObj("random.obj",1000);
 
     return 0;
 }
